@@ -1,7 +1,7 @@
 import java.util.*;
 
 //import java.math.*;
-public class JavaProject {
+public class create_calendar {
     public static void main(String[] args){
         Scanner sc= new Scanner(System.in);
         System.out.printf("Bạn muốn sinh lịch tháng: \n");
