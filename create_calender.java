@@ -9,7 +9,7 @@ public class create_calendar {
         
         System.out.printf("Mời nhập vào số ngày của tháng %d: \n",n);
         int day=sc.nextInt();
-        System.out.printf("Ngày đầu tiên của tháng 8 là vào thứ: (Sunday = 8)\n");
+        System.out.printf("Ngày đầu tiên của tháng là vào thứ: (Sunday = 8)\n");
         int thu=sc.nextInt();
         
         
