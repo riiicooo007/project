@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Audio Visualizer</title>
+<style>
+  :root {
+    --overlay-alpha: 0.55;
+    --glass-bg: rgba(255, 255, 255, 0.08);
+    --glass-border: rgba(255, 255, 255, 0.18);
+    --text: #eef2ff;
+    --text-dim: rgba(238, 242, 255, 0.65);
+    --accent: #22d3ee;
+    --accent-2: #e879f9;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #05060f;
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- Nền + overlay ---------- */
+  #bg {
+    position: fixed;
+    inset: -4%;
+    background-color: #0a0b1e;
+    background-image:
+      radial-gradient(60% 50% at 20% 25%, rgba(34, 211, 238, 0.35), transparent 70%),
+      radial-gradient(55% 55% at 80% 30%, rgba(232, 121, 249, 0.35), transparent 70%),
+      radial-gradient(70% 60% at 50% 100%, rgba(124, 58, 237, 0.45), transparent 70%);
+    background-size: cover;
+    background-position: center;
+    will-change: transform;
+    transition: background-image 0.4s;
+  }
+
+  #overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(4, 5, 14, var(--overlay-alpha));
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+    pointer-events: none;
+  }
+
+  /* ---------- Hiệu ứng ---------- */
+  #flash {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
+    mix-blend-mode: screen;
+    background: radial-gradient(circle at 50% 50%, #22d3ee 0%, transparent 65%);
+  }
+  #panel.idle {
+    opacity: 0;
+    transform: translate(-50%, 18px);
+    pointer-events: none;
+  }
+  body.idle { cursor: none; }
+
+  .fx-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 16px;
+  }
+  .field .chk {
+    justify-content: flex-start;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 0;
+    font-size: 0.82rem;
+    color: var(--text);
+    cursor: pointer;
+    user-select: none;
+  }
+  .chk input {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 34px;
+    height: 20px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.2);
+    position: relative;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.2s;
+  }
+  .chk input::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.2s;
+  }
+  .chk input:checked { background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+  .chk input:checked::after { transform: translateX(14px); }
+
+  /* ---------- Canvas ---------- */
+  #viz {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  /* ---------- Gợi ý khi chưa có nhạc ---------- */
+  #hint {
+    position: fixed;
+    top: 12%;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.95rem;
+    letter-spacing: 0.04em;
+    pointer-events: none;
+    transition: opacity 0.4s;
+    padding: 0 16px;
+  }
+  #hint strong { color: var(--text); font-weight: 600; }
+  #hint.hidden { opacity: 0; }
+
+  /* ---------- Vùng thả file ---------- */
+  #dropzone {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(4, 5, 14, 0.65);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+  }
+  #dropzone.active { opacity: 1; }
+  #dropzone .box {
+    border: 2px dashed var(--accent);
+    border-radius: 28px;
+    padding: 48px 56px;
+    text-align: center;
+    font-size: 1.25rem;
+    box-shadow: 0 0 40px rgba(34, 211, 238, 0.35), inset 0 0 40px rgba(34, 211, 238, 0.12);
+  }
+  #dropzone small { display: block; margin-top: 8px; color: var(--text-dim); font-size: 0.85rem; }
+
+  /* ---------- Bảng điều khiển glassmorphism ---------- */
+  #panel {
+    position: fixed;
+    left: 50%;
+    bottom: max(20px, env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    width: min(720px, calc(100vw - 24px));
+    z-index: 20;
+    padding: 16px 18px;
+    border-radius: 24px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    -webkit-backdrop-filter: blur(22px) saturate(160%);
+    backdrop-filter: blur(22px) saturate(160%);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    transition: opacity 0.3s, transform 0.3s;
+  }
+  #panel.hidden {
+    opacity: 0;
+    transform: translate(-50%, 24px);
+    pointer-events: none;
+  }
+
+  .row { display: flex; align-items: center; gap: 12px; }
+  .row + .row { margin-top: 12px; }
+
+  #trackName {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.95rem;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #status { font-size: 0.78rem; color: var(--text-dim); white-space: nowrap; }
+  #status.error { color: #fca5a5; }
+
+  .time { font-variant-numeric: tabular-nums; font-size: 0.78rem; color: var(--text-dim); min-width: 38px; }
+  .time.right { text-align: right; }
+
+  /* Nút */
+  button, .btn {
+    appearance: none;
+    border: 1px solid var(--glass-border);
+    background: rgba(255, 255, 255, 0.07);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.82rem;
+    padding: 9px 14px;
+    border-radius: 14px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
+    user-select: none;
+    white-space: nowrap;
+  }
+  button:hover, .btn:hover { background: rgba(255, 255, 255, 0.15); }
+  button:active, .btn:active { transform: scale(0.96); }
+  button:focus-visible, .btn:focus-within, input:focus-visible, select:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  #playBtn {
+    width: 52px;
+    height: 52px;
+    padding: 0;
+    justify-content: center;
+    border-radius: 50%;
+    border: none;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    box-shadow: 0 0 22px rgba(34, 211, 238, 0.5);
+    flex-shrink: 0;
+  }
+  #playBtn:hover { background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 0 30px rgba(232, 121, 249, 0.6); }
+  #playBtn svg { width: 22px; height: 22px; fill: #06101c; }
+
+  .btn input[type="file"] { display: none; }
+  svg.ico { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* Nút tròn nhỏ (shuffle / prev / next / repeat) */
+  .ibtn {
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    justify-content: center;
+    border-radius: 50%;
+    position: relative;
+    flex-shrink: 0;
+  }
+  .ibtn svg.ico { width: 18px; height: 18px; }
+  .toggle.active {
+    color: var(--accent);
+    background: rgba(34, 211, 238, 0.16);
+    border-color: rgba(34, 211, 238, 0.55);
+  }
+  .badge {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #06101c;
+    font-size: 0.62rem;
+    font-weight: 700;
+    display: none;
+    align-items: center;
+    justify-content: center;
+  }
+  .ibtn[data-mode="one"] .badge { display: flex; }
+  .count {
+    min-width: 20px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.14);
+    font-size: 0.72rem;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .controls-row { gap: 10px; }
+  .controls-row .volume { margin-left: auto; }
+
+  /* Danh sách phát */
+  .queue {
+    display: none;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--glass-border);
+  }
+  .queue.open { display: block; }
+  .queue-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+  button.small { padding: 5px 10px; font-size: 0.74rem; border-radius: 10px; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  .queue-list {
+    list-style: none;
+    max-height: 200px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-right: 4px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+  }
+  .q-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    border-radius: 12px;
+    cursor: pointer;
+    font-size: 0.84rem;
+    border: 1px solid transparent;
+    transition: background 0.15s;
+  }
+  .q-item:hover { background: rgba(255, 255, 255, 0.1); }
+  .q-item.active { background: rgba(34, 211, 238, 0.14); border-color: rgba(34, 211, 238, 0.4); }
+  .q-index {
+    width: 22px;
+    text-align: center;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.76rem;
+    flex-shrink: 0;
+  }
+  .q-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .q-remove {
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border-radius: 50%;
+    justify-content: center;
+    background: transparent;
+    border-color: transparent;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+  .q-remove:hover { color: #fca5a5; background: rgba(255, 255, 255, 0.1); }
+  .q-remove svg { width: 14px; height: 14px; }
+  .q-eq {
+    display: none;
+    width: 22px;
+    height: 14px;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+  .q-eq i { width: 3px; height: 30%; background: var(--accent); border-radius: 2px; }
+  .q-item.active .q-index { display: none; }
+  .q-item.active .q-eq { display: flex; }
+  .queue-list.playing .q-eq i { animation: eq 0.9s ease-in-out infinite; }
+  .queue-list.playing .q-eq i:nth-child(2) { animation-delay: 0.2s; }
+  .queue-list.playing .q-eq i:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes eq { 0%, 100% { height: 25%; } 50% { height: 100%; } }
+  .queue-empty { text-align: center; color: var(--text-dim); font-size: 0.8rem; padding: 12px 8px; }
+
+  /* Range slider */
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 6px;
+    border-radius: 999px;
+    background: linear-gradient(to right, var(--accent) 0%, var(--accent-2) var(--fill, 0%), rgba(255,255,255,0.18) var(--fill, 0%));
+    cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.7);
+    border: none;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 16px; height: 16px; border-radius: 50%;
+    background: #fff; border: none;
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.7);
+  }
+
+  .volume { display: flex; align-items: center; gap: 8px; width: 140px; }
+  .volume svg { flex-shrink: 0; color: var(--text-dim); }
+  .spacer { flex: 1; }
+
+  /* Cài đặt visualizer */
+  #settings {
+    display: none;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--glass-border);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 22px;
+  }
+  #settings.open {
+    display: grid;
+    max-height: 40vh;
+    overflow-y: auto;
+    padding-right: 6px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+  }
+
+  .field label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.76rem;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+  .field label output { color: var(--text); font-variant-numeric: tabular-nums; }
+  .field.wide { grid-column: 1 / -1; }
+
+  select {
+    width: 100%;
+    background: rgba(255, 255, 255, 0.09);
+    color: var(--text);
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 0.85rem;
+  }
+  select option { color: #111; }
+
+  .colors { display: flex; gap: 10px; margin-top: 10px; }
+  .colors input[type="color"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 32px;
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    background: transparent;
+    padding: 2px;
+    cursor: pointer;
+  }
+  .colors input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+  .colors input[type="color"]::-webkit-color-swatch { border: none; border-radius: 8px; }
+  .colors input[type="color"]::-moz-color-swatch { border: none; border-radius: 8px; }
+
+  /* Nút bật lại panel */
+  #showPanel {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    z-index: 19;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s;
+  }
+  #showPanel.visible { opacity: 1; pointer-events: auto; }
+
+  /* ---------- Responsive ---------- */
+  @media (max-width: 560px) {
+    #panel { padding: 14px; border-radius: 20px; }
+    #settings { grid-template-columns: 1fr; }
+    .controls-row { flex-wrap: wrap; }
+    .volume { width: 100%; order: 5; }
+    .queue-list { max-height: 150px; }
+    .fx-grid { grid-template-columns: 1fr; }
+    .btn span.label, button span.label { display: none; }
+    #hint { top: 8%; font-size: 0.85rem; }
+  }
+  @media (max-height: 520px) {
+    #hint { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="bg"></div>
+<div id="overlay"></div>
+<div id="flash"></div>
+<canvas id="viz"></canvas>
+
+<div id="hint">
+  <strong>Kéo &amp; thả</strong> một hoặc nhiều file nhạc (.mp3, .wav) vào bất kỳ đâu<br>
+  hoặc bấm <strong>Thêm nhạc</strong> ở bảng điều khiển bên dưới
+</div>
+
+<div id="dropzone">
+  <div class="box">
+    Thả file vào đây
+    <small>Nhiều file nhạc (.mp3, .wav) sẽ xếp vào danh sách phát, hoặc thả ảnh để đổi nền</small>
+  </div>
+</div>
+
+<button id="showPanel" title="Hiện bảng điều khiển (H)">Hiện bảng điều khiển</button>
+
+<section id="panel" aria-label="Bảng điều khiển">
+  <!-- Tên bài + trạng thái -->
+  <div class="row">
+    <div id="trackName">Chưa chọn bài hát</div>
+    <div id="status"></div>
+  </div>
+
+  <!-- Thanh tiến trình -->
+  <div class="row">
+    <span class="time" id="curTime">0:00</span>
+    <input type="range" id="progress" min="0" max="1000" value="0" step="1" aria-label="Tiến trình phát">
+    <span class="time right" id="durTime">0:00</span>
+  </div>
+
+  <!-- Điều khiển chính -->
+  <div class="row controls-row">
+    <button id="shuffleBtn" class="ibtn toggle" title="Ngẫu nhiên: tắt" aria-label="Ngẫu nhiên" aria-pressed="false">
+      <svg class="ico" viewBox="0 0 24 24"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+    </button>
+
+    <button id="prevBtn" class="ibtn" title="Bài trước" aria-label="Bài trước">
+      <svg class="ico" viewBox="0 0 24 24"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
+    </button>
+
+    <button id="playBtn" aria-label="Phát / Tạm dừng"></button>
+
+    <button id="nextBtn" class="ibtn" title="Bài kế tiếp" aria-label="Bài kế tiếp">
+      <svg class="ico" viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+    </button>
+
+    <div class="volume">
+      <svg class="ico" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+      <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8" aria-label="Âm lượng">
+    </div>
+
+    <button id="repeatBtn" class="ibtn toggle" data-mode="off" title="Lặp lại: tắt" aria-label="Lặp lại">
+      <svg class="ico" viewBox="0 0 24 24"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+      <span class="badge">1</span>
+    </button>
+  </div>
+
+  <!-- Thêm nhạc / ảnh / danh sách -->
+  <div class="row actions-row">
+    <label class="btn" title="Thêm một hoặc nhiều file nhạc vào danh sách phát">
+      <svg class="ico" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+      <span class="label">Thêm nhạc</span>
+      <input type="file" id="audioInput" accept="audio/*,.mp3,.wav" multiple>
+    </label>
+
+    <label class="btn" title="Chọn ảnh nền">
+      <svg class="ico" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+      <span class="label">Ảnh nền</span>
+      <input type="file" id="bgInput" accept="image/*">
+    </label>
+
+    <button id="queueBtn" class="toggle" aria-expanded="false" title="Danh sách phát">
+      <svg class="ico" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+      <span class="label">Danh sách</span>
+      <span class="count" id="queueCount">0</span>
+    </button>
+
+    <div class="spacer"></div>
+
+    <button id="fullscreenBtn" class="ibtn" title="Toàn màn hình (F)" aria-label="Toàn màn hình">
+      <svg class="ico" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+    </button>
+
+    <button id="settingsBtn" aria-expanded="false" title="Cài đặt visualizer">
+      <svg class="ico" viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+      <span class="label">Tuỳ chỉnh</span>
+    </button>
+
+    <button id="hideBtn" title="Ẩn bảng điều khiển (H)" aria-label="Ẩn bảng điều khiển">
+      <svg class="ico" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+    </button>
+  </div>
+
+  <!-- Danh sách phát -->
+  <div id="queue" class="queue">
+    <div class="queue-head">
+      <span>Danh sách phát</span>
+      <button id="clearQueueBtn" class="small" title="Xoá toàn bộ danh sách phát">
+        <svg class="ico" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+        Xoá hết
+      </button>
+    </div>
+    <ul id="queueList" class="queue-list" aria-label="Danh sách phát"></ul>
+    <div id="queueEmpty" class="queue-empty">Chưa có bài nào. Chọn hoặc kéo thả nhiều file nhạc để tạo danh sách phát.</div>
+  </div>
+
+  <!-- Cài đặt -->
+  <div id="settings">
+    <div class="field">
+      <label for="barWidth">Độ rộng thanh <output></output></label>
+      <input type="range" id="barWidth" data-key="barWidth" min="2" max="20" step="1" value="6">
+    </div>
+    <div class="field">
+      <label for="gap">Khoảng cách <output></output></label>
+      <input type="range" id="gap" data-key="gap" min="0" max="12" step="1" value="3">
+    </div>
+    <div class="field">
+      <label for="glow">Độ phát sáng (glow) <output></output></label>
+      <input type="range" id="glow" data-key="glow" min="0" max="60" step="1" value="25">
+    </div>
+    <div class="field">
+      <label for="sensitivity">Độ nhạy <output></output></label>
+      <input type="range" id="sensitivity" data-key="sensitivity" min="0.4" max="2.5" step="0.05" value="1.2">
+    </div>
+    <div class="field">
+      <label for="smoothing">Độ mượt <output></output></label>
+      <input type="range" id="smoothing" data-key="smoothing" min="0" max="0.95" step="0.01" value="0.8">
+    </div>
+    <div class="field">
+      <label for="overlay">Độ tối nền <output></output></label>
+      <input type="range" id="overlay" data-key="overlay" min="0" max="0.9" step="0.01" value="0.55">
+    </div>
+    <div class="field">
+      <label for="mode">Kiểu hiển thị</label>
+      <select id="mode">
+        <option value="bars">Thanh đối xứng</option>
+        <option value="radial">Vòng tròn</option>
+        <option value="wave">Sóng (oscilloscope)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="fxIntensity">Cường độ hiệu ứng <output></output></label>
+      <input type="range" id="fxIntensity" data-key="fxIntensity" min="0" max="2" step="0.05" value="1">
+    </div>
+    <div class="field wide">
+      <label>Hiệu ứng</label>
+      <div class="fx-grid">
+        <label class="chk"><input type="checkbox" data-fx="flash"> Nhấp nháy theo beat</label>
+        <label class="chk"><input type="checkbox" data-fx="shake"> Rung màn hình</label>
+        <label class="chk"><input type="checkbox" data-fx="particles"> Hạt phát sáng</label>
+        <label class="chk"><input type="checkbox" data-fx="autoColor"> Màu theo ảnh nền</label>
+        <label class="chk"><input type="checkbox" data-fx="autoHide"> Tự ẩn bảng điều khiển</label>
+      </div>
+    </div>
+    <div class="field wide">
+      <label for="palette">Bảng màu</label>
+      <select id="palette">
+        <option value="neon">Neon (Cyan → Magenta → Tím)</option>
+        <option value="cyan">Ocean (Cyan → Xanh dương)</option>
+        <option value="magenta">Candy (Hồng → Magenta → Tím)</option>
+        <option value="sunset">Sunset (Cam → Hồng → Tím)</option>
+        <option value="aurora">Aurora (Xanh lá → Cyan → Xanh dương)</option>
+        <option value="custom">Tuỳ chọn</option>
+      </select>
+      <div class="colors">
+        <input type="color" id="color0" value="#22d3ee" aria-label="Màu trung tâm (bass)">
+        <input type="color" id="color1" value="#e879f9" aria-label="Màu giữa">
+        <input type="color" id="color2" value="#7c3aed" aria-label="Màu rìa (treble)">
+      </div>
+    </div>
+  </div>
+</section>
+
+<audio id="audio" preload="auto" crossorigin="anonymous"></audio>
+
+<script src="visualizer.js"></script>
+</body>
+</html>
