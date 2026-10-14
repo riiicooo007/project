@@ -15,6 +15,12 @@
   const bgEl = $("bg");
 
   const ui = {
+    bgLayers: document.querySelectorAll("#bg .bg-layer"),
+    bgThumbs: $("bgThumbs"),
+    bgCount: $("bgCount"),
+    bgPrev: $("bgPrev"),
+    bgNext: $("bgNext"),
+    bgClear: $("bgClear"),
     panel: $("panel"),
     hint: $("hint"),
     dropzone: $("dropzone"),
@@ -58,6 +64,8 @@
   };
 
   const DEFAULTS = {
+    autoBg: false,
+    bgInterval: 15,
     barWidth: 6,
     gap: 3,
     glow: 25,
@@ -107,7 +115,8 @@
   let analyser = null;
   let freq = new Uint8Array(1024); // sẽ thay bằng frequencyBinCount thật khi khởi tạo audio
   let timeData = new Uint8Array(2048); // dữ liệu sóng âm (dùng cho kiểu "Sóng")
-
+  let beatAnalyser = null;
+  let beatFreq = new Uint8Array(1024);
   function initAudio() {
     if (actx) return;
     const AC = window.AudioContext || window.webkitAudioContext;
@@ -120,6 +129,13 @@
     const source = actx.createMediaElementSource(audio);
     source.connect(analyser);
     analyser.connect(actx.destination);
+    beatAnalyser = actx.createAnalyser();
+    beatAnalyser.fftSize = 2048;
+    beatAnalyser.minDecibels = -90;
+    beatAnalyser.maxDecibels = -10;
+    beatAnalyser.smoothingTimeConstant = 0.2; // ít làm mượt để thấy đột biến
+    source.connect(beatAnalyser);
+    beatFreq = new Uint8Array(beatAnalyser.frequencyBinCount);
     freq = new Uint8Array(analyser.frequencyBinCount);
     timeData = new Uint8Array(analyser.fftSize);
   }
@@ -130,7 +146,7 @@
     '<svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
 
   let audioUrl = null;
-  let bgUrl = null;
+  
   let bgImage = null; // ảnh nền hiện tại (để lấy màu chủ đạo)
   let seeking = false;
 
@@ -417,6 +433,7 @@
   ui.queueList.addEventListener("keydown", (e) => {
     if (e.key !== "Enter") return;
     const li = e.target.closest(".q-item");
+    
     if (li && e.target === li) {
       e.preventDefault();
       playIndex(Number(li.dataset.index));
@@ -459,23 +476,130 @@
   syncModeButtons();
   renderQueue();
 
-  function loadBackgroundFile(file) {
-    if (!isImageFile(file)) {
+   /* ---------- Nhiều ảnh nền ---------- */
+  const bgList = []; // { id, name, url, img }
+  let bgIndex = -1;
+  let bgLayer = 0;
+  let bgTimer = null;
+  let bgNextId = 1;
+
+  function addBackgrounds(files) {
+    const valid = files.filter(isImageFile);
+    if (!valid.length) {
       setStatus("File không phải ảnh hợp lệ", true);
       return;
     }
-    if (bgUrl) URL.revokeObjectURL(bgUrl);
-    bgUrl = URL.createObjectURL(file);
-    bgEl.style.backgroundImage = `url("${bgUrl}")`;
-    setStatus("Đã đổi ảnh nền");
-
-    const img = new Image();
-    img.onload = () => {
-      bgImage = img;
-      if (settings.autoColor) applyAutoColor(img);
-    };
-    img.src = bgUrl;
+    valid.sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { numeric: true }),
+    );
+    const first = bgList.length;
+    valid.forEach((file) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.src = url;
+      bgList.push({ id: bgNextId++, name: file.name, url, img });
+    });
+    setStatus(`Đã thêm ${valid.length} ảnh nền`);
+    showBg(first);
   }
+
+  function showBg(i) {
+    if (!bgList.length) {
+      bgIndex = -1;
+      bgImage = null;
+      ui.bgLayers.forEach((l) => l.classList.remove("show"));
+      renderBgThumbs();
+      restartBgTimer();
+      return;
+    }
+    bgIndex = (i + bgList.length) % bgList.length;
+    const item = bgList[bgIndex];
+    bgLayer = 1 - bgLayer;
+    const next = ui.bgLayers[bgLayer];
+    const prev = ui.bgLayers[1 - bgLayer];
+    next.style.backgroundImage = `url("${item.url}")`;
+    next.style.zIndex = 2;
+    prev.style.zIndex = 1;
+    next.classList.add("show");
+    clearTimeout(showBg._t);
+    showBg._t = setTimeout(() => prev.classList.remove("show"), 1000);
+
+    bgImage = item.img;
+    if (settings.autoColor) {
+      if (item.img.complete && item.img.naturalWidth) applyAutoColor(item.img);
+      else
+        item.img.addEventListener("load", () => applyAutoColor(item.img), {
+          once: true,
+        });
+    }
+    renderBgThumbs();
+    restartBgTimer();
+  }
+
+  function removeBg(i) {
+    const item = bgList[i];
+    if (!item) return;
+    bgList.splice(i, 1);
+    setTimeout(() => URL.revokeObjectURL(item.url), 1500); // chờ hiệu ứng mờ dần xong
+    if (!bgList.length) showBg(0);
+    else if (i === bgIndex) showBg(Math.min(i, bgList.length - 1));
+    else {
+      if (i < bgIndex) bgIndex--;
+      renderBgThumbs();
+    }
+  }
+
+  function clearBgs() {
+    if (!bgList.length) return;
+    const urls = bgList.map((b) => b.url);
+    bgList.length = 0;
+    setTimeout(() => urls.forEach((u) => URL.revokeObjectURL(u)), 1500);
+    showBg(0);
+    setStatus("Đã xoá ảnh nền");
+  }
+
+  function restartBgTimer() {
+    clearInterval(bgTimer);
+    bgTimer = null;
+    if (settings.autoBg && bgList.length > 1)
+      bgTimer = setInterval(
+        () => showBg(bgIndex + 1),
+        settings.bgInterval * 1000,
+      );
+  }
+
+  function renderBgThumbs() {
+    ui.bgCount.textContent = String(bgList.length);
+    ui.bgThumbs.textContent = "";
+    if (!bgList.length) {
+      const e = document.createElement("div");
+      e.className = "bg-empty";
+      e.textContent = "Chưa có ảnh nền. Bấm “Ảnh nền” hoặc kéo thả nhiều ảnh vào.";
+      ui.bgThumbs.appendChild(e);
+      return;
+    }
+    bgList.forEach((item, i) => {
+      const d = document.createElement("div");
+      d.className = "bg-thumb" + (i === bgIndex ? " active" : "");
+      d.dataset.index = String(i);
+      d.title = item.name;
+      d.style.backgroundImage = `url("${item.url}")`;
+      d.innerHTML = '<span class="x" title="Xoá ảnh">×</span>';
+      ui.bgThumbs.appendChild(d);
+    });
+  }
+
+  ui.bgThumbs.addEventListener("click", (e) => {
+    const t = e.target.closest(".bg-thumb");
+    if (!t) return;
+    const i = Number(t.dataset.index);
+    if (e.target.closest(".x")) removeBg(i);
+    else showBg(i);
+  });
+  ui.bgPrev.addEventListener("click", () => showBg(bgIndex - 1));
+  ui.bgNext.addEventListener("click", () => showBg(bgIndex + 1));
+  ui.bgClear.addEventListener("click", clearBgs);
+  renderBgThumbs();
 
   /* ---------- Lấy màu chủ đạo từ ảnh nền ---------- */
   function rgbToHsl(r, g2, b) {
@@ -724,9 +848,9 @@
     if (files.length) addFiles(files);
     e.target.value = "";
   });
-  ui.bgInput.addEventListener("change", (e) => {
-    const f = e.target.files[0];
-    if (f) loadBackgroundFile(f);
+   ui.bgInput.addEventListener("change", (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length) addBackgrounds(files);
     e.target.value = "";
   });
 
@@ -758,10 +882,10 @@
     ui.dropzone.classList.remove("active");
     const files = Array.from(e.dataTransfer.files);
     const audioFiles = files.filter(isAudioFile);
-    const imageFile = files.find(isImageFile);
-    if (imageFile) loadBackgroundFile(imageFile);
+    const imageFiles = files.filter(isImageFile);
+    if (imageFiles.length) addBackgrounds(imageFiles);
     if (audioFiles.length) addFiles(audioFiles);
-    if (!audioFiles.length && !imageFile)
+    if (!audioFiles.length && !imageFiles.length)
       setStatus("Định dạng file không được hỗ trợ", true);
   });
 
@@ -786,7 +910,9 @@
       out.textContent = v + "px";
     else if (key === "overlay" || key === "smoothing")
       out.textContent = Math.round(v * 100) + "%";
+    else if (key === "bgInterval") out.textContent = v + "s";
     else out.textContent = v.toFixed(2).replace(/0$/, "");
+
   }
 
   rangeInputs.forEach((input) => {
@@ -801,6 +927,7 @@
       if (key === "smoothing" && analyser)
         analyser.smoothingTimeConstant = settings.smoothing;
       if (key === "overlay") applyOverlay();
+      if (key === "bgInterval") restartBgTimer();
       if (key === "barWidth" || key === "gap") colorsDirty = true;
       saveSettings();
     });
@@ -915,6 +1042,8 @@
       playPrev();
     } else if (e.key === "f" || e.key === "F") {
       toggleFullscreen();
+    } else if (e.key === "b" || e.key === "B") {
+      showBg(bgIndex + 1);
     }
   });
 
@@ -1150,7 +1279,54 @@
     }
     g.restore();
   }
+    /* ---------- Bắt beat đa dải (spectral flux) ---------- */
+  const BEAT_K = 2.0; // nhỏ hơn = nhạy hơn (thử 1.5 – 3)
+  const BEAT_BANDS = [
+    { lo: 20, hi: 150, w: 1.0 }, // bass / kick
+    { lo: 150, hi: 500, w: 0.9 }, // low-mid: snare, thân giọng
+    { lo: 500, hi: 2000, w: 1.0 }, // mid: lời, lead
+    { lo: 2000, hi: 6000, w: 1.0 }, // high-mid: phụ âm, clap
+    { lo: 6000, hi: 14000, w: 1.0 }, // treble: hi-hat
+  ].map((b) => ({ ...b, mean: 0, vari: 0, last: 0 }));
+  let prevFreq = null;
 
+  // Trả về độ mạnh beat (0 = không có beat)
+  function detectBeat(now) {
+    beatAnalyser.getByteFrequencyData(beatFreq);
+    const bHz = actx.sampleRate / 2 / beatFreq.length;
+    let strength = 0;
+
+    for (const b of BEAT_BANDS) {
+      const lo = Math.max(1, Math.floor(b.lo / bHz));
+      const hi = Math.min(beatFreq.length - 1, Math.ceil(b.hi / bHz));
+      let flux = 0,
+        en = 0;
+      for (let k = lo; k <= hi; k++) {
+        en += beatFreq[k];
+        if (prevFreq) {
+          const d = beatFreq[k] - prevFreq[k];
+          if (d > 0) flux += d; // chỉ tính phần tăng đột ngột
+        }
+      }
+      const n = hi - lo + 1;
+      flux /= n * 255;
+      en /= n * 255;
+
+      if (prevFreq) {
+        const thr = b.mean + BEAT_K * Math.sqrt(b.vari) + 0.012;
+        if (en > 0.1 && flux > thr && now - b.last > 110) {
+          b.last = now;
+          strength = Math.max(strength, Math.min(1, 0.55 + (flux - thr) * 12 * b.w));
+        }
+        const diff = flux - b.mean;
+        b.mean += diff * 0.04;
+        b.vari += (diff * diff - b.vari) * 0.04;
+      }
+    }
+    if (!prevFreq) prevFreq = new Uint8Array(beatFreq.length);
+    prevFreq.set(beatFreq);
+    return strength;
+  }
   function binValue(pos) {
     // nội suy tuyến tính giữa hai bin
     const i = Math.floor(pos);
@@ -1190,10 +1366,12 @@
       for (let i = 1; i <= 6; i++) bass += freq[i];
       bass /= 6 * 255;
     }
-    bassAvg = bassAvg * 0.96 + bass * 0.04;
-    let beat = false;
-    if (playing && bass > bassAvg * 1.2 + 0.06 && now - lastBeat > 170) {
-      pulse = 1;
+        let beat = false;
+    let onset = 0;
+    if (playing) onset = detectBeat(now);
+    else prevFreq = null; // tạm dừng thì bỏ mẫu cũ để lần phát lại không báo beat giả
+    if (onset > 0 && now - lastBeat > 90) {
+      pulse = Math.max(pulse, onset);
       lastBeat = now;
       beat = true;
     }
